@@ -1,34 +1,27 @@
-// Chat con mensajes en memoria, para probar la interfaz antes de conectar la IA.
-import { createMessage, formatTime } from './utils.js';
+// Lógica del chat: estado, llamada a la API y renderizado. No sabe nada del routing.
+import { API_URL, createMessage, formatTime, toApiMessages, parseApiResponse } from './utils.js';
 
 const GREETING = 'Buenas tardes. Soy Sherlock Holmes. Exponga su caso, y sea breve: el tiempo es un lujo.';
-const REPLY_DELAY_MS = 600;
-const MOCK_REPLIES = [
-  'Elemental. Tres detalles bastan, y usted pasó por alto los tres.',
-  'Observe las manos, no las palabras: ahí está la verdad.',
-  'El caso es simple. La gente complica lo que no quiere ver.',
-  'Interesante. Continúe, pero omita lo irrelevante.',
-  'Ya lo tengo. El resto es mera confirmación.',
-];
 
 let messages = [];
 let loading = false;
-let replyIndex = 0;
-
-function nextReply() {
-  const text = MOCK_REPLIES[replyIndex % MOCK_REPLIES.length];
-  replyIndex += 1;
-  return text;
-}
-
-function delay(ms) {
-  return new Promise((resolve) => { setTimeout(resolve, ms); });
-}
 
 export function getMessages() { return messages; }
 
 export function clearHistory() {
   messages = [createMessage('assistant', GREETING)];
+}
+
+export async function requestReply(history, fetchFn = fetch) {
+  const res = await fetchFn(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages: toApiMessages(history) }),
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* cuerpo no JSON */ }
+  if (!res.ok) throw new Error(data?.error || `Error del servidor (${res.status}).`);
+  return parseApiResponse(data);
 }
 
 function messageEl(m) {
@@ -67,7 +60,7 @@ function typingEl() {
 function render(list) {
   list.replaceChildren(...messages.map(messageEl));
   if (loading) list.append(typingEl());
-  list.scrollTop = list.scrollHeight;
+  list.scrollTop = list.scrollHeight; // scroll automático al último mensaje
 }
 
 let view = null;
@@ -83,11 +76,16 @@ async function send(text) {
   messages.push(createMessage('user', text));
   loading = true;
   refresh();
-  await delay(REPLY_DELAY_MS);
-  messages.push(createMessage('assistant', nextReply()));
-  loading = false;
-  refresh();
-  if (view && document.body.contains(view.input)) view.input.focus();
+  try {
+    messages.push(createMessage('assistant', await requestReply(messages)));
+  } catch (err) {
+    const msg = createMessage('assistant', `⚠️ ${err.message || 'No se pudo contactar con Sherlock.'} Inténtelo de nuevo.`);
+    messages.push({ ...msg, isError: true });
+  } finally {
+    loading = false;
+    refresh();
+    if (view && document.body.contains(view.input)) view.input.focus();
+  }
 }
 
 export function mountChat(root) {
@@ -103,7 +101,7 @@ export function mountChat(root) {
   if (!messages.length) clearHistory();
 
   form.addEventListener('submit', (e) => {
-    e.preventDefault();
+    e.preventDefault(); // Enter en el input también dispara submit
     const text = view.input.value.trim();
     if (!text || loading) return;
     view.input.value = '';
